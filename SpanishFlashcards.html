@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Spanish Flashcards Learner</title>
+
+  <!-- Font & libs -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/processing.js/1.6.6/processing.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.min.js"></script>
+
+  <style>
+    :root{--bg:#f5f7fb;--surface:#ffffff;--primary:#4f46e5;--primary-dark:#4338ca;--txt:#1f2937;--radius:12px;--shadow:0 4px 10px rgba(0,0,0,.08);} *,*::before,*::after{box-sizing:border-box;} body{margin:0;background:var(--bg);font-family:'Inter',sans-serif;color:var(--txt);display:flex;justify-content:center;padding:40px 16px;} .wrapper{width:100%;max-width:760px;} h2{margin:0 0 24px;text-align:center;font-weight:600;color:var(--primary);} #controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;} input,textarea,button{font-family:inherit;font-size:14px;} input,textarea{padding:10px 12px;border:1px solid #d1d5db;border-radius:var(--radius);background:#fff;outline-color:var(--primary);} button{cursor:pointer;border:none;color:#fff;background:var(--primary);padding:10px 16px;border-radius:var(--radius);font-weight:600;transition:background .15s,transform .15s;} button:hover{background:var(--primary-dark);} button:active{transform:scale(.97);} .file-input-wrapper{position:relative;overflow:hidden;} .file-input-wrapper input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;} canvas{display:block;width:100%;max-width:400px;aspect-ratio:2/1;margin:0 auto;border-radius:var(--radius);box-shadow:var(--shadow);} #listContainer{position:fixed;inset:0;background:rgba(31,41,55,.4);display:none;align-items:center;justify-content:center;padding:16px;z-index:1000;} #listCard{background:var(--surface);border-radius:var(--radius);width:100%;max-width:420px;max-height:80vh;box-shadow:var(--shadow);display:flex;flex-direction:column;} #listHeader{padding:16px 20px;font-weight:600;border-bottom:1px solid #e5e7eb;} #cardList{list-style:none;margin:0;padding:12px 20px;overflow-y:auto;flex:1;} #cardList li{padding:6px 4px;border-bottom:1px solid #f3f4f6;cursor:pointer;font-size:14px;} #cardList li:last-child{border-bottom:none;} #cardList li:hover{background:#eef2ff;} #closeListBtn{border-top:1px solid #e5e7eb;border-radius:0 0 var(--radius) var(--radius);} textarea{width:100%;} @media(min-width:600px){#controls input{flex:1;min-width:140px;}}
+  </style>
+</head>
+
+<body>
+  <div class="wrapper">
+    <h2>Spanish Flashcards Learner</h2>
+
+    <!-- CONTROL BAR -->
+    <div id="controls">
+      <input id="spanishInput" placeholder="Spanish word / phrase" />
+      <input id="englishInput" placeholder="English meaning" />
+      <button id="addBtn">Add</button>
+      <button id="showBtn">Random</button>
+      <button id="listBtn">All Cards</button>
+      <button id="exportBtn">Export</button>
+      <div class="file-input-wrapper">
+        <button id="pdfBtn">Import PDF</button>
+        <input id="pdfInput" type="file" accept="application/pdf" />
+      </div>
+    </div>
+
+    <!-- Text import helper -->
+    <textarea id="importInput" rows="3" placeholder="Paste exported text here to import cards"></textarea>
+    <button id="importBtn" style="margin-top:8px">Import Text</button>
+
+    <!-- Canvas flash-card -->
+    <canvas id="flashcardCanvas" width="400" height="200"></canvas>
+
+    <!-- Modal list -->
+    <div id="listContainer"><div id="listCard"><div id="listHeader">Flashcards (click to view)</div><ul id="cardList"></ul><button id="closeListBtn">Close</button></div></div>
+  </div>
+
+  <!-- ProcessingJS sketch: handles drawing and flip logic -->
+  <script type="application/processing" data-processing-target="flashcardCanvas">
+    /* ------------------------------------------------------------------
+       ProcessingJS sketch – draws a single flashcard inside the canvas.
+       On each mouse click, flips between Spanish (earthy brown) and
+       English (neutral gray). JS outside the sketch feeds card data.
+    ------------------------------------------------------------------ */
+
+    Flashcard cur;           // currently displayed card
+    boolean showSp = true;   // true => Spanish side up
+
+    class Flashcard {
+      String sp, en;
+      Flashcard(String s, String e) { sp = s; en = e; }
+    }
+
+    void setup() {
+      size(400, 200);
+      smooth();
+      textAlign(CENTER, CENTER);
+      textSize(30);
+    }
+
+    void draw() {
+      background(255);
+
+      if (cur == null) {
+        fill(0);
+        textSize(18);
+        text("Add some cards to begin", width/2, height/2);
+        return;
+      }
+
+      /* Card face: earthy brown when Spanish, gray when English */
+      if (showSp) {
+        fill(166, 124, 82);   // earthy tone
+      } else {
+        fill(120);            // gray
+      }
+      rect(20, 20, width - 40, height - 40, 12);
+
+      /* Card text */
+      fill(255);
+      text(showSp ? cur.sp : cur.en, width/2, height/2);
+    }
+
+    // Flip card on click (JS also listens for click to speak)
+    void mousePressed() {
+      if (cur != null) showSp = !showSp;
+    }
+
+    /* Exposed helpers (called from JS) */
+    void showCard(int idx) {
+      if (__flashcards.length > idx) {
+        cur = new Flashcard(__flashcards[idx].spanish, __flashcards[idx].english);
+        showSp = true; // always start on Spanish side
+      }
+    }
+  </script>
+
+  <!-- Main JS: deck management, speech synthesis, PDF import -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      /* --------------------------------------------------
+         GLOBAL STATE & SHORTCUTS
+      -------------------------------------------------- */
+      window.__flashcards = [];           // deck accessible to sketch
+      let currentSpanish = '';            // Spanish phrase for TTS
+      const $ = (id) => document.getElementById(id);
+
+      // Configure PDF.js worker
+      if (window.pdfjsLib) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.111/pdf.worker.min.js';
+      }
+
+      /* --------------------------------------------------
+         ADD CARD MANUALLY
+      -------------------------------------------------- */
+      $('addBtn').onclick = () => {
+        const sp = $('spanishInput').value.trim();
+        const en = $('englishInput').value.trim();
+        if (!sp || !en) return;
+        __flashcards.push({ spanish: sp, english: en });
+        $('spanishInput').value = $('englishInput').value = '';
+        alert('Flashcard added!');
+      };
+
+      /* --------------------------------------------------
+         SHOW RANDOM CARD (and track Spanish for TTS)
+      -------------------------------------------------- */
+      $('showBtn').onclick = () => {
+        if (!__flashcards.length) return alert('No cards yet');
+        const idx = Math.floor(Math.random() * __flashcards.length);
+        currentSpanish = __flashcards[idx].spanish;
+        Processing.getInstanceById('flashcardCanvas').showCard(idx);
+      };
+
+      /* --------------------------------------------------
+         LIST MODAL – click any row to display & set TTS
+      -------------------------------------------------- */
+      const listContainer = $('listContainer');
+      const renderList = () => {
+        const ul = $('cardList');
+        ul.innerHTML = '';
+        if (!__flashcards.length) {
+          ul.innerHTML = '<li>No flashcards yet.</li>';
+          return;
+        }
+        __flashcards.forEach((c, i) => {
+          const li = document.createElement('li');
+          li.textContent = `${c.spanish} — ${c.english}`;
+          li.onclick = () => {
+            currentSpanish = c.spanish;
+            Processing.getInstanceById('flashcardCanvas').showCard(i);
+            listContainer.style.display = 'none';
+          };
+          ul.appendChild(li);
+        });
+      };
+      $('listBtn').onclick = () => {
+        renderList();
+        listContainer.style.display = 'flex';
+      };
+      $('closeListBtn').onclick = () => (listContainer.style.display = 'none');
+
+      /* --------------------------------------------------
+         EXPORT / IMPORT (Base64 JSON)
+      -------------------------------------------------- */
+      $('exportBtn').onclick = () => {
+        if (!__flashcards.length) return alert('Nothing to export');
+        prompt('Copy this for safekeeping:', btoa(JSON.stringify(__flashcards)));
+      };
+
+      $('importBtn').onclick = () => {
+        const data = $('importInput').value.trim();
+        if (!data) return alert('Paste exported text first');
+        try {
+          const deck = JSON.parse(atob(data));
+          if (!Array.isArray(deck)) throw 0;
+          window.__flashcards = deck;
+          $('importInput').value = '';
+          alert('Deck imported!');
+        } catch {
+          alert('Invalid import data');
+        }
+      };
+
+      /* --------------------------------------------------
+         CANVAS CLICK —> Speak Spanish phrase aloud
+      -------------------------------------------------- */
+      $('flashcardCanvas').addEventListener('click', () => {
+        if (!currentSpanish) return;
+        // Cancel any ongoing speech then speak
+        speechSynthesis.cancel();
+        const ut = new SpeechSynthesisUtterance(currentSpanish);
+        ut.lang = 'es-ES'; // use Spanish voice if available
+        speechSynthesis.speak(ut);
+      });
+
+      /* --------------------------------------------------
+         PDF IMPORT (multi-word Spanish supported)
+         – unchanged logic, but updates currentSpanish when first card loaded
+      -------------------------------------------------- */
+      $('pdfInput').onchange = async (evt) => {
+        if (!window.pdfjsLib) return alert('PDF.js not loaded');
+        const file = evt.target.files[0];
+        if (!file) return;
+
+        try {
+          const buf = await file.arrayBuffer();
+          const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+          let added = 0;
+
+          // Group tokens by row (keeping x positions)
+          const buildRows = (items) => {
+            const map = {};
+            items.forEach((it) => {
+              const y = Math.round(it.transform[5]);
+              (map[y] = map[y] || []).push({ str: it.str, x: it.transform[4] });
+            });
+            return Object.keys(map)
+              .sort((a, b) => b - a)
+              .map((y) => map[y].sort((a, b) => a.x - b.x));
+          };
+
+          const detectThreshold = (rows) => {
+            const xs = [];
+            rows.forEach((r) => {
+              let maxGap = 0,
+                idx = -1;
+              for (let i = 0; i < r.length - 1; i++) {
+                const g = r[i + 1].x - r[i].x;
+                if (g > maxGap) {
+                  maxGap = g;
+                  idx = i;
+                }
+              }
+              if (maxGap > 30 && idx !== -1 && r[idx + 1]) xs.push(r[idx + 1].x);
+            });
+            return xs.length ? Math.min(...xs) : null;
+          };
+
+          for (let p = 1; p <= doc.numPages; p++) {
+            const page = await doc.getPage(p);
+            const txt = await page.getTextContent();
+            const rows = buildRows(txt.items);
+            const threshold = detectThreshold(rows);
+            let pagePlus = 0;
+
+            rows.forEach((row) => {
+              if (!row.length) return;
+              let left = [],
+                right = [];
+              if (threshold !== null) {
+                row.forEach((t) => (t.x < threshold ? left : right).push(t.str));
+              } else {
+                // widest gap fallback
+                let idx = -1,
+                  maxGap = 0;
+                for (let i = 0; i < row.length - 1; i++) {
+                  const g = row[i + 1].x - row[i].x;
+                  if (g > maxGap) {
+                    maxGap = g;
+                    idx = i;
+                  }
+                }
+                left = row.slice(0, idx + 1).map((t) => t.str);
+                right = row.slice(idx + 1).map((t) => t.str);
+              }
+              const sp = left.join(' ').trim();
+              const en = right.join(' ').trim();
+              if (sp && en) {
+                __flashcards.push({ spanish: sp, english: en });
+                added++;
+                pagePlus++;
+              }
+            });
+
+            if (pagePlus === 0) {
+              const flat = rows.flat().map((t) => t.str);
+              for (let i = 0; i < flat.length - 1; i += 2) {
+                __flashcards.push({ spanish: flat[i], english: flat[i + 1] });
+                added++;
+              }
+            }
+          }
+
+          alert(`${added} flashcards imported from PDF!`);
+          if (added && __flashcards.length) {
+            // Show the first new card and prep speech
+            currentSpanish = __flashcards[__flashcards.length-added].spanish;
+            Processing.getInstanceById('flashcardCanvas').showCard(__flashcards.length-added);
+          }
+        } catch (err) {
+          console.error(err);
+          alert('PDF import failed: ' + err.message);
+        } finally {
+          evt.target.value = '';
+        }
+      };
+    });
+  </script>
+</body>
+</html>
